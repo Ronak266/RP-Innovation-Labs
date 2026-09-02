@@ -82,12 +82,6 @@ export default function Services() {
                   ))}
                 </div>
 
-                <div className="mt-6 pt-6 border-t border-gray-100">
-                  <button className="text-blue-600 font-semibold hover:text-blue-700 transition-colors duration-200 flex items-center group-hover:gap-2 gap-1">
-                    Learn More
-                    <span className="group-hover:translate-x-1 transition-transform duration-200">→</span>
-                  </button>
-                </div>
               </div>
             );
           })}
