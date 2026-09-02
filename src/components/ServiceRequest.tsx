@@ -16,6 +16,39 @@ interface FormData {
   project_description: string;
 }
 
+const countryCodes = [
+  { code: '+1', label: 'United States (+1)' },
+  { code: '+1', label: 'Canada (+1)' },
+  { code: '+44', label: 'United Kingdom (+44)' },
+  { code: '+91', label: 'India (+91)' },
+  { code: '+61', label: 'Australia (+61)' },
+  { code: '+49', label: 'Germany (+49)' },
+  { code: '+33', label: 'France (+33)' },
+  { code: '+39', label: 'Italy (+39)' },
+  { code: '+34', label: 'Spain (+34)' },
+  { code: '+31', label: 'Netherlands (+31)' },
+  { code: '+81', label: 'Japan (+81)' },
+  { code: '+82', label: 'South Korea (+82)' },
+  { code: '+86', label: 'China (+86)' },
+  { code: '+65', label: 'Singapore (+65)' },
+  { code: '+971', label: 'UAE (+971)' },
+  { code: '+966', label: 'Saudi Arabia (+966)' },
+  { code: '+27', label: 'South Africa (+27)' },
+  { code: '+55', label: 'Brazil (+55)' },
+  { code: '+52', label: 'Mexico (+52)' },
+  { code: '+7', label: 'Russia (+7)' },
+];
+
+interface FormState {
+  name: string;
+  email: string;
+  company: string;
+  countryCode: string;
+  phone: string;
+  service_type: string;
+  project_description: string;
+}
+
 interface FormErrors {
   name?: string;
   email?: string;
@@ -31,10 +64,11 @@ interface ServiceRequestProps {
 }
 
 export default function ServiceRequest({ isOpen, onClose }: ServiceRequestProps) {
-  const [formData, setFormData] = useState<FormData>({
+  const [formState, setFormState] = useState<FormState>({
     name: '',
     email: '',
     company: '',
+    countryCode: '+1',
     phone: '',
     service_type: '',
     project_description: ''
@@ -70,35 +104,35 @@ export default function ServiceRequest({ isOpen, onClose }: ServiceRequestProps)
   const validateForm = (): boolean => {
     const newErrors: FormErrors = {};
 
-    if (!formData.name.trim()) {
+    if (!formState.name.trim()) {
       newErrors.name = 'Name is required';
     }
 
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!formData.email.trim()) {
+    if (!formState.email.trim()) {
       newErrors.email = 'Email is required';
-    } else if (!emailRegex.test(formData.email)) {
+    } else if (!emailRegex.test(formState.email)) {
       newErrors.email = 'Please enter a valid email address';
     }
 
-    if (!formData.company.trim()) {
+    if (!formState.company.trim()) {
       newErrors.company = 'Company name is required';
     }
 
-    const phoneRegex = /^[\d\s\-\+\(\)]+$/;
-    if (!formData.phone.trim()) {
+    const phoneRegex = /^[\d\s\-\(\)]+$/;
+    if (!formState.phone.trim()) {
       newErrors.phone = 'Phone number is required';
-    } else if (!phoneRegex.test(formData.phone)) {
+    } else if (!phoneRegex.test(formState.phone)) {
       newErrors.phone = 'Please enter a valid phone number';
     }
 
-    if (!formData.service_type) {
+    if (!formState.service_type) {
       newErrors.service_type = 'Please select a service';
     }
 
-    if (!formData.project_description.trim()) {
+    if (!formState.project_description.trim()) {
       newErrors.project_description = 'Project description is required';
-    } else if (formData.project_description.trim().length < 20) {
+    } else if (formState.project_description.trim().length < 20) {
       newErrors.project_description = 'Please provide at least 20 characters';
     }
 
@@ -117,9 +151,18 @@ export default function ServiceRequest({ isOpen, onClose }: ServiceRequestProps)
     setSubmitStatus('idle');
 
     try {
+      const submitData: FormData = {
+        name: formState.name,
+        email: formState.email,
+        company: formState.company,
+        phone: `${formState.countryCode} ${formState.phone}`,
+        service_type: formState.service_type,
+        project_description: formState.project_description
+      };
+
       const { error } = await supabase
         .from('service_requests')
-        .insert([formData]);
+        .insert([submitData]);
 
       if (error) throw error;
 
@@ -132,7 +175,7 @@ export default function ServiceRequest({ isOpen, onClose }: ServiceRequestProps)
               'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
               'Content-Type': 'application/json',
             },
-            body: JSON.stringify(formData)
+            body: JSON.stringify(submitData)
           }
         );
 
@@ -144,10 +187,11 @@ export default function ServiceRequest({ isOpen, onClose }: ServiceRequestProps)
       }
 
       setSubmitStatus('success');
-      setFormData({
+      setFormState({
         name: '',
         email: '',
         company: '',
+        countryCode: '+1',
         phone: '',
         service_type: '',
         project_description: ''
@@ -168,7 +212,7 @@ export default function ServiceRequest({ isOpen, onClose }: ServiceRequestProps)
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
-    setFormData(prev => ({ ...prev, [name]: value }));
+    setFormState(prev => ({ ...prev, [name]: value }));
     if (errors[name as keyof FormErrors]) {
       setErrors(prev => ({ ...prev, [name]: undefined }));
     }
@@ -228,7 +272,7 @@ export default function ServiceRequest({ isOpen, onClose }: ServiceRequestProps)
                   type="text"
                   id="name"
                   name="name"
-                  value={formData.name}
+                  value={formState.name}
                   onChange={handleChange}
                   className={`w-full px-4 py-3 rounded-lg border ${
                     errors.name ? 'border-red-300 focus:ring-red-500' : 'border-gray-300 focus:ring-blue-500'
@@ -248,7 +292,7 @@ export default function ServiceRequest({ isOpen, onClose }: ServiceRequestProps)
                   type="email"
                   id="email"
                   name="email"
-                  value={formData.email}
+                  value={formState.email}
                   onChange={handleChange}
                   className={`w-full px-4 py-3 rounded-lg border ${
                     errors.email ? 'border-red-300 focus:ring-red-500' : 'border-gray-300 focus:ring-blue-500'
@@ -270,7 +314,7 @@ export default function ServiceRequest({ isOpen, onClose }: ServiceRequestProps)
                   type="text"
                   id="company"
                   name="company"
-                  value={formData.company}
+                  value={formState.company}
                   onChange={handleChange}
                   className={`w-full px-4 py-3 rounded-lg border ${
                     errors.company ? 'border-red-300 focus:ring-red-500' : 'border-gray-300 focus:ring-blue-500'
@@ -286,17 +330,35 @@ export default function ServiceRequest({ isOpen, onClose }: ServiceRequestProps)
                 <label htmlFor="phone" className="block text-sm font-semibold text-gray-700 mb-2">
                   Phone Number *
                 </label>
-                <input
-                  type="tel"
-                  id="phone"
-                  name="phone"
-                  value={formData.phone}
-                  onChange={handleChange}
-                  className={`w-full px-4 py-3 rounded-lg border ${
-                    errors.phone ? 'border-red-300 focus:ring-red-500' : 'border-gray-300 focus:ring-blue-500'
-                  } focus:ring-2 focus:border-transparent transition-all duration-200`}
-                  placeholder="+1 (555) 123-4567"
-                />
+                <div className="flex gap-2">
+                  <select
+                    id="countryCode"
+                    name="countryCode"
+                    value={formState.countryCode}
+                    onChange={handleChange}
+                    className={`px-3 py-3 rounded-lg border ${
+                      errors.phone ? 'border-red-300 focus:ring-red-500' : 'border-gray-300 focus:ring-blue-500'
+                    } focus:ring-2 focus:border-transparent transition-all duration-200 flex-shrink-0`}
+                    style={{ minWidth: '7rem' }}
+                  >
+                    {countryCodes.map((country) => (
+                      <option key={country.label} value={country.code}>
+                        {country.label}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    type="tel"
+                    id="phone"
+                    name="phone"
+                    value={formState.phone}
+                    onChange={handleChange}
+                    className={`flex-1 min-w-0 px-4 py-3 rounded-lg border ${
+                      errors.phone ? 'border-red-300 focus:ring-red-500' : 'border-gray-300 focus:ring-blue-500'
+                    } focus:ring-2 focus:border-transparent transition-all duration-200`}
+                    placeholder="(555) 123-4567"
+                  />
+                </div>
                 {errors.phone && (
                   <p className="mt-1 text-sm text-red-600">{errors.phone}</p>
                 )}
@@ -310,7 +372,7 @@ export default function ServiceRequest({ isOpen, onClose }: ServiceRequestProps)
               <select
                 id="service_type"
                 name="service_type"
-                value={formData.service_type}
+                value={formState.service_type}
                 onChange={handleChange}
                 className={`w-full px-4 py-3 rounded-lg border ${
                   errors.service_type ? 'border-red-300 focus:ring-red-500' : 'border-gray-300 focus:ring-blue-500'
@@ -335,7 +397,7 @@ export default function ServiceRequest({ isOpen, onClose }: ServiceRequestProps)
               <textarea
                 id="project_description"
                 name="project_description"
-                value={formData.project_description}
+                value={formState.project_description}
                 onChange={handleChange}
                 rows={6}
                 className={`w-full px-4 py-3 rounded-lg border ${
@@ -347,7 +409,7 @@ export default function ServiceRequest({ isOpen, onClose }: ServiceRequestProps)
                 <p className="mt-1 text-sm text-red-600">{errors.project_description}</p>
               )}
               <p className="mt-2 text-sm text-gray-500">
-                {formData.project_description.length} characters (minimum 20 required)
+                {formState.project_description.length} characters (minimum 20 required)
               </p>
             </div>
 
