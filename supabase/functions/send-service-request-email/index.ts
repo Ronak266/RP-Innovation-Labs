@@ -27,7 +27,7 @@ Deno.serve(async (req: Request) => {
     const requestData: ServiceRequest = await req.json();
 
     const RESEND_API_KEY = Deno.env.get('RESEND_API_KEY');
-    const ADMIN_EMAIL = Deno.env.get('ADMIN_EMAIL') || 'rpinnovationlabs@gmail.com';
+    const ADMIN_EMAIL = 'rpinnovationlabs@gmail.com';
     const FROM_EMAIL_ENV = Deno.env.get('FROM_EMAIL');
     const FROM_EMAIL = (FROM_EMAIL_ENV && FROM_EMAIL_ENV.includes('@'))
       ? FROM_EMAIL_ENV
