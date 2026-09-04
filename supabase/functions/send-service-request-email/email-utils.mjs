@@ -72,3 +72,7 @@ export function buildTurnstileVerificationBody(secret, token) {
   return new URLSearchParams({ secret, response: token });
 }
 
+export function turnstileHostnameFromOrigin(origin) {
+  return new URL(origin).hostname;
+}
+
