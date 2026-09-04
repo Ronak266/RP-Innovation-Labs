@@ -1,6 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
-import { buildEmailRecipients, buildGmailRawMessage, escapeHtml, isTrustedTurnstileResponse, validateServiceRequest } from "./email-utils.mjs";
+import { buildEmailRecipients, buildGmailRawMessage, buildTurnstileVerificationBody, escapeHtml, isTrustedTurnstileResponse, validateServiceRequest } from "./email-utils.mjs";
 
 const jsonHeaders = { "Content-Type": "application/json" };
 
@@ -17,14 +17,11 @@ async function sha256(value: string) {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-async function verifyTurnstile(token: string, ip: string) {
+async function verifyTurnstile(token: string) {
   const secret = Deno.env.get("TURNSTILE_SECRET_KEY");
   const hostname = Deno.env.get("TURNSTILE_HOSTNAME");
   if (!secret || !hostname) throw new Error("Bot protection is not configured.");
-  const form = new FormData();
-  form.set("secret", secret);
-  form.set("response", token);
-  if (ip !== "unknown") form.set("remoteip", ip);
+  const form = buildTurnstileVerificationBody(secret, token);
   const response = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", { method: "POST", body: form });
   const result = response.ok ? await response.json() : null;
   if (!isTrustedTurnstileResponse(result, hostname)) throw new Error("Bot verification failed. Please try again.");
@@ -78,8 +75,8 @@ Deno.serve(async (request: Request) => {
     const turnstileToken = typeof payload.turnstileToken === "string" ? payload.turnstileToken : "";
     if (!turnstileToken) throw new Error("Bot verification is required.");
     const serviceRequest = validateServiceRequest(payload);
+    await verifyTurnstile(turnstileToken);
     const ip = clientIp(request);
-    await verifyTurnstile(turnstileToken, ip);
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
