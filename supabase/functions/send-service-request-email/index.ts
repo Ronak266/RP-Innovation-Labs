@@ -1,6 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
-import { buildEmailRecipients, buildGmailRawMessage, buildTurnstileVerificationBody, escapeHtml, isTrustedTurnstileResponse, turnstileHostnameFromOrigin, validateServiceRequest } from "./email-utils.mjs";
+import { buildEmailRecipients, buildGmailRawMessage, buildTurnstileVerificationBody, escapeHtml, isTrustedTurnstileResponse, nextRateLimitWindow, turnstileHostnameFromOrigin, validateServiceRequest } from "./email-utils.mjs";
 
 const jsonHeaders = { "Content-Type": "application/json" };
 
@@ -61,6 +61,30 @@ async function sendWithGmail(accessToken: string, to: string, from: string, subj
   if (!response.ok) throw new Error("Email delivery was rejected by Gmail.");
 }
 
+async function consumeRateLimit(supabase: ReturnType<typeof createClient>, requestKey: string) {
+  const { data: allowed, error: rpcError } = await supabase.rpc("consume_service_request_rate_limit", { request_key: requestKey });
+  if (!rpcError) return allowed;
+
+  console.warn("Rate-limit RPC unavailable; using server-side table fallback", rpcError.message);
+  const { data: existing, error: readError } = await supabase
+    .from("service_request_rate_limits")
+    .select("attempts, window_started_at")
+    .eq("request_key", requestKey)
+    .maybeSingle();
+  if (readError) throw new Error("Rate-limit service is unavailable.");
+
+  const now = new Date().toISOString();
+  const next = nextRateLimitWindow(existing, now);
+  const { error: writeError } = await supabase.from("service_request_rate_limits").upsert({
+    request_key: requestKey,
+    attempts: next.attempts,
+    window_started_at: next.window_started_at,
+    updated_at: now,
+  }, { onConflict: "request_key" });
+  if (writeError) throw new Error("Rate-limit service is unavailable.");
+  return next.allowed;
+}
+
 Deno.serve(async (request: Request) => {
   const allowedOrigin = Deno.env.get("ALLOWED_ORIGIN");
   const origin = request.headers.get("origin") || undefined;
@@ -87,8 +111,7 @@ Deno.serve(async (request: Request) => {
     if (!supabaseUrl || !serviceRoleKey || !gmailClientId || !gmailClientSecret || !gmailRefreshToken || !gmailSenderEmail) throw new Error("The Gmail email configuration is incomplete.");
     const supabase = createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false } });
 
-    const { data: allowed, error: rateLimitError } = await supabase.rpc("consume_service_request_rate_limit", { request_key: await sha256(`${ip}:${serviceRequest.email}`) });
-    if (rateLimitError) throw new Error("Rate-limit service is unavailable.");
+    const allowed = await consumeRateLimit(supabase, await sha256(`${ip}:${serviceRequest.email}`));
     if (!allowed) return reply({ success: false, error: "Too many requests. Please try again later." }, 429, corsOrigin);
 
     const { data: stored, error: insertError } = await supabase.from("service_requests").insert({ ...serviceRequest, delivery_status: "pending" }).select("id").single();
