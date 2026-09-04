@@ -8,6 +8,7 @@ import {
   buildTurnstileVerificationBody,
   escapeHtml,
   isTrustedTurnstileResponse,
+  turnstileHostnameFromOrigin,
   validateServiceRequest,
 } from './email-utils.mjs';
 
@@ -60,6 +61,13 @@ test('accepts a Turnstile response only for the configured hostname', () => {
 test('verifies a Turnstile token without proxy IP metadata', () => {
   const body = buildTurnstileVerificationBody('test-secret', 'test-token');
   assert.equal(body.toString(), 'secret=test-secret&response=test-token');
+});
+
+test('derives the trusted Turnstile hostname from the allowed website origin', () => {
+  assert.equal(
+    turnstileHostnameFromOrigin('https://rp-innovation-labs-c-ck4o.bolt.host'),
+    'rp-innovation-labs-c-ck4o.bolt.host',
+  );
 });
 
 test('builds a Gmail API message with a UTF-8 HTML body and cannot inject extra headers through the subject', () => {
