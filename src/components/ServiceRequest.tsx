@@ -1,11 +1,5 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Send, CheckCircle, AlertCircle, X } from 'lucide-react';
-import { createClient } from '@supabase/supabase-js';
-
-const supabase = createClient(
-  import.meta.env.VITE_SUPABASE_URL,
-  import.meta.env.VITE_SUPABASE_ANON_KEY
-);
 
 interface FormData {
   name: string;
@@ -63,6 +57,15 @@ interface ServiceRequestProps {
   onClose: () => void;
 }
 
+declare global {
+  interface Window {
+    turnstile?: {
+      render: (container: HTMLElement, options: { sitekey: string; callback: (token: string) => void; 'expired-callback': () => void }) => string;
+      remove: (widgetId: string) => void;
+    };
+  }
+}
+
 export default function ServiceRequest({ isOpen, onClose }: ServiceRequestProps) {
   const [formState, setFormState] = useState<FormState>({
     name: '',
@@ -77,6 +80,9 @@ export default function ServiceRequest({ isOpen, onClose }: ServiceRequestProps)
   const [errors, setErrors] = useState<FormErrors>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitStatus, setSubmitStatus] = useState<'idle' | 'success' | 'error'>('idle');
+  const [turnstileToken, setTurnstileToken] = useState('');
+  const turnstileContainer = useRef<HTMLDivElement>(null);
+  const turnstileWidgetId = useRef<string>();
 
   useEffect(() => {
     if (isOpen) {
@@ -86,6 +92,42 @@ export default function ServiceRequest({ isOpen, onClose }: ServiceRequestProps)
     }
     return () => {
       document.body.style.overflow = 'unset';
+    };
+  }, [isOpen]);
+
+  useEffect(() => {
+    const siteKey = import.meta.env.VITE_TURNSTILE_SITE_KEY;
+    if (!isOpen || !siteKey || !turnstileContainer.current) return;
+    const render = () => {
+      if (window.turnstile && turnstileContainer.current && !turnstileWidgetId.current) {
+        turnstileWidgetId.current = window.turnstile.render(turnstileContainer.current, {
+          sitekey: siteKey,
+          callback: setTurnstileToken,
+          'expired-callback': () => setTurnstileToken(''),
+        });
+      }
+    };
+    const script = document.querySelector<HTMLScriptElement>('script[data-turnstile]');
+    if (script) {
+      script.addEventListener('load', render);
+      render();
+      return () => {
+        script.removeEventListener('load', render);
+        if (turnstileWidgetId.current && window.turnstile) window.turnstile.remove(turnstileWidgetId.current);
+        turnstileWidgetId.current = undefined;
+      };
+    }
+    const newScript = document.createElement('script');
+    newScript.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+    newScript.async = true;
+    newScript.defer = true;
+    newScript.dataset.turnstile = 'true';
+    newScript.addEventListener('load', render);
+    document.head.appendChild(newScript);
+    return () => {
+      newScript.removeEventListener('load', render);
+      if (turnstileWidgetId.current && window.turnstile) window.turnstile.remove(turnstileWidgetId.current);
+      turnstileWidgetId.current = undefined;
     };
   }, [isOpen]);
 
@@ -119,7 +161,7 @@ export default function ServiceRequest({ isOpen, onClose }: ServiceRequestProps)
       newErrors.company = 'Company name is required';
     }
 
-    const phoneRegex = /^[\d\s\-\(\)]+$/;
+    const phoneRegex = /^[\d\s\-()]+$/;
     if (!formState.phone.trim()) {
       newErrors.phone = 'Phone number is required';
     } else if (!phoneRegex.test(formState.phone)) {
@@ -160,31 +202,14 @@ export default function ServiceRequest({ isOpen, onClose }: ServiceRequestProps)
         project_description: formState.project_description
       };
 
-      const { error } = await supabase
-        .from('service_requests')
-        .insert([submitData]);
-
-      if (error) throw error;
-
-      try {
-        const response = await fetch(
-          `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-service-request-email`,
-          {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(submitData)
-          }
-        );
-
-        if (!response.ok) {
-          console.warn('Email notification failed, but request was saved');
-        }
-      } catch (emailError) {
-        console.warn('Email notification error:', emailError);
-      }
+      if (!turnstileToken) throw new Error('Please complete the security check before submitting.');
+      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-service-request-email`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...submitData, turnstileToken })
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Unable to submit your request.');
 
       setSubmitStatus('success');
       setFormState({
@@ -196,6 +221,7 @@ export default function ServiceRequest({ isOpen, onClose }: ServiceRequestProps)
         service_type: '',
         project_description: ''
       });
+      setTurnstileToken('');
 
       setTimeout(() => {
         setSubmitStatus('idle');
@@ -204,6 +230,7 @@ export default function ServiceRequest({ isOpen, onClose }: ServiceRequestProps)
 
     } catch (error) {
       console.error('Error submitting form:', error);
+      setErrors({ project_description: error instanceof Error ? error.message : 'Unable to submit your request.' });
       setSubmitStatus('error');
     } finally {
       setIsSubmitting(false);
@@ -390,6 +417,11 @@ export default function ServiceRequest({ isOpen, onClose }: ServiceRequestProps)
               )}
             </div>
 
+            <div ref={turnstileContainer} aria-label="Spam protection" />
+            {!import.meta.env.VITE_TURNSTILE_SITE_KEY && (
+              <p className="text-sm text-red-600">Security check is not configured. Please contact us directly.</p>
+            )}
+
             <div>
               <label htmlFor="project_description" className="block text-sm font-semibold text-gray-700 mb-2">
                 Project Description *
@@ -415,7 +447,7 @@ export default function ServiceRequest({ isOpen, onClose }: ServiceRequestProps)
 
             <button
               type="submit"
-              disabled={isSubmitting}
+              disabled={isSubmitting || !turnstileToken}
               className="w-full bg-blue-600 text-white px-8 py-4 rounded-lg hover:bg-blue-700 transition-all duration-200 font-semibold shadow-lg hover:shadow-xl flex items-center justify-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isSubmitting ? (
@@ -436,3 +468,4 @@ export default function ServiceRequest({ isOpen, onClose }: ServiceRequestProps)
     </div>
   );
 }
+
