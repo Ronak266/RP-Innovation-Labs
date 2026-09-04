@@ -1,247 +1,121 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from "jsr:@supabase/supabase-js@2";
+import { buildEmailRecipients, buildGmailRawMessage, escapeHtml, isTrustedTurnstileResponse, validateServiceRequest } from "./email-utils.mjs";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
-};
+const jsonHeaders = { "Content-Type": "application/json" };
 
-interface ServiceRequest {
-  name: string;
-  email: string;
-  company: string;
-  phone: string;
-  service_type: string;
-  project_description: string;
+function reply(body: Record<string, unknown>, status: number, allowedOrigin?: string) {
+  return new Response(JSON.stringify(body), { status, headers: { ...jsonHeaders, ...(allowedOrigin ? { "Access-Control-Allow-Origin": allowedOrigin, "Vary": "Origin" } : {}) } });
 }
 
-Deno.serve(async (req: Request) => {
-  if (req.method === "OPTIONS") {
-    return new Response(null, {
-      status: 200,
-      headers: corsHeaders,
-    });
-  }
+function clientIp(request: Request) {
+  return request.headers.get("cf-connecting-ip") || request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+}
+
+async function sha256(value: string) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function verifyTurnstile(token: string, ip: string) {
+  const secret = Deno.env.get("TURNSTILE_SECRET_KEY");
+  const hostname = Deno.env.get("TURNSTILE_HOSTNAME");
+  if (!secret || !hostname) throw new Error("Bot protection is not configured.");
+  const form = new FormData();
+  form.set("secret", secret);
+  form.set("response", token);
+  if (ip !== "unknown") form.set("remoteip", ip);
+  const response = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", { method: "POST", body: form });
+  const result = response.ok ? await response.json() : null;
+  if (!isTrustedTurnstileResponse(result, hostname)) throw new Error("Bot verification failed. Please try again.");
+}
+
+function customerEmail(request: Record<string, string>) {
+  return `<p>Dear ${escapeHtml(request.name)},</p><p>Thank you for reaching out to RP Innovation Labs. We received your service request and will respond within 24 hours.</p><p><strong>Service:</strong> ${escapeHtml(request.service_type)}<br><strong>Company:</strong> ${escapeHtml(request.company)}</p><p>Best regards,<br><strong>RP Innovation Labs Team</strong></p>`;
+}
+
+function adminEmail(request: Record<string, string>) {
+  return `<h1>New Service Request Received</h1><p><strong>Name:</strong> ${escapeHtml(request.name)}<br><strong>Email:</strong> ${escapeHtml(request.email)}<br><strong>Company:</strong> ${escapeHtml(request.company)}<br><strong>Phone:</strong> ${escapeHtml(request.phone)}<br><strong>Service:</strong> ${escapeHtml(request.service_type)}</p><h2>Project Description</h2><p>${escapeHtml(request.project_description).replaceAll("\n", "<br>")}</p>`;
+}
+
+async function gmailAccessToken(clientId: string, clientSecret: string, refreshToken: string) {
+  const body = new URLSearchParams({
+    client_id: clientId,
+    client_secret: clientSecret,
+    refresh_token: refreshToken,
+    grant_type: "refresh_token",
+  });
+  const response = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body,
+  });
+  const result = response.ok ? await response.json() : null;
+  if (typeof result?.access_token !== "string") throw new Error("Gmail authorization could not be refreshed.");
+  return result.access_token;
+}
+
+async function sendWithGmail(accessToken: string, to: string, from: string, subject: string, html: string) {
+  const response = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${accessToken}` },
+    body: JSON.stringify({ raw: buildGmailRawMessage({ to, from, subject, html }) }),
+  });
+  if (!response.ok) throw new Error("Email delivery was rejected by Gmail.");
+}
+
+Deno.serve(async (request: Request) => {
+  const allowedOrigin = Deno.env.get("ALLOWED_ORIGIN");
+  const origin = request.headers.get("origin") || undefined;
+  const corsOrigin = allowedOrigin && origin === allowedOrigin ? allowedOrigin : undefined;
+
+  if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: corsOrigin ? { "Access-Control-Allow-Origin": corsOrigin, "Access-Control-Allow-Methods": "POST, OPTIONS", "Access-Control-Allow-Headers": "Content-Type", "Vary": "Origin" } : {} });
+  if (request.method !== "POST") return reply({ success: false, error: "Method not allowed." }, 405, corsOrigin);
+  if (!corsOrigin) return reply({ success: false, error: "Origin is not allowed." }, 403);
 
   try {
-    const requestData: ServiceRequest = await req.json();
+    const payload = await request.json();
+    const turnstileToken = typeof payload.turnstileToken === "string" ? payload.turnstileToken : "";
+    if (!turnstileToken) throw new Error("Bot verification is required.");
+    const serviceRequest = validateServiceRequest(payload);
+    const ip = clientIp(request);
+    await verifyTurnstile(turnstileToken, ip);
 
-    const RESEND_API_KEY = Deno.env.get('RESEND_API_KEY') || Deno.env.get('RESNED_API_KEY');
-    const ADMIN_EMAIL = 'rpinnovationlabs@gmail.com';
-    const FROM_EMAIL = 'rkatepalli817@gmail.com';
+    const supabaseUrl = Deno.env.get("SUPABASE_URL");
+    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    const gmailClientId = Deno.env.get("GMAIL_CLIENT_ID");
+    const gmailClientSecret = Deno.env.get("GMAIL_CLIENT_SECRET");
+    const gmailRefreshToken = Deno.env.get("GMAIL_REFRESH_TOKEN");
+    const gmailSenderEmail = Deno.env.get("GMAIL_SENDER_EMAIL");
+    if (!supabaseUrl || !serviceRoleKey || !gmailClientId || !gmailClientSecret || !gmailRefreshToken || !gmailSenderEmail) throw new Error("The Gmail email configuration is incomplete.");
+    const supabase = createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false } });
 
-    const userEmailHTML = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <style>
-          body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-          .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-          .header { background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
-          .content { background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px; }
-          .info-box { background: white; padding: 20px; margin: 20px 0; border-radius: 8px; border-left: 4px solid #2563eb; }
-          .footer { text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb; color: #6b7280; font-size: 14px; }
-          h1 { margin: 0; font-size: 28px; }
-          h2 { color: #2563eb; font-size: 20px; margin-top: 0; }
-          .label { font-weight: bold; color: #4b5563; }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="header">
-            <h1>Thank You for Your Request!</h1>
-          </div>
-          <div class="content">
-            <p>Dear ${requestData.name},</p>
-            <p>Thank you for reaching out to RP Innovation Labs. We have received your service request and our team is excited to help transform your data strategy.</p>
+    const { data: allowed, error: rateLimitError } = await supabase.rpc("consume_service_request_rate_limit", { request_key: await sha256(`${ip}:${serviceRequest.email}`) });
+    if (rateLimitError) throw new Error("Rate-limit service is unavailable.");
+    if (!allowed) return reply({ success: false, error: "Too many requests. Please try again later." }, 429, corsOrigin);
 
-            <div class="info-box">
-              <h2>Request Summary</h2>
-              <p><span class="label">Service Type:</span> ${requestData.service_type}</p>
-              <p><span class="label">Company:</span> ${requestData.company}</p>
-              <p><span class="label">Contact:</span> ${requestData.email} | ${requestData.phone}</p>
-            </div>
+    const { data: stored, error: insertError } = await supabase.from("service_requests").insert({ ...serviceRequest, delivery_status: "pending" }).select("id").single();
+    if (insertError) throw new Error("Unable to save your request.");
 
-            <h2>What Happens Next?</h2>
-            <p>Our specialist team will review your request and get back to you within 24 hours. In the meantime, feel free to explore our resources or contact us if you have any questions.</p>
+    const recipients = buildEmailRecipients(serviceRequest);
 
-            <p style="margin-top: 30px;">Best regards,<br><strong>RP Innovation Labs Team</strong></p>
-          </div>
-          <div class="footer">
-            <p>RP Innovation Labs | Sri Navika opposite to Abyaas Juniour collage Bachupally</p>
-            <p>rpinnovationlabs@gmail.com | +91 8374737488</p>
-          </div>
-        </div>
-      </body>
-      </html>
-    `;
-
-    const adminEmailHTML = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <style>
-          body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-          .container { max-width: 700px; margin: 0 auto; padding: 20px; }
-          .header { background: #1e293b; color: white; padding: 20px; border-radius: 8px 8px 0 0; }
-          .content { background: #f8fafc; padding: 30px; border-radius: 0 0 8px 8px; }
-          .detail-row { display: flex; padding: 12px; margin: 8px 0; background: white; border-radius: 6px; }
-          .detail-label { font-weight: bold; min-width: 180px; color: #475569; }
-          .detail-value { color: #1e293b; }
-          .description-box { background: white; padding: 20px; margin: 20px 0; border-radius: 8px; border-left: 4px solid #2563eb; }
-          h1 { margin: 0; font-size: 24px; }
-          h2 { color: #2563eb; margin-top: 0; }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="header">
-            <h1>New Service Request Received</h1>
-          </div>
-          <div class="content">
-            <h2>Client Information</h2>
-            <div class="detail-row">
-              <span class="detail-label">Name:</span>
-              <span class="detail-value">${requestData.name}</span>
-            </div>
-            <div class="detail-row">
-              <span class="detail-label">Email:</span>
-              <span class="detail-value">${requestData.email}</span>
-            </div>
-            <div class="detail-row">
-              <span class="detail-label">Company:</span>
-              <span class="detail-value">${requestData.company}</span>
-            </div>
-            <div class="detail-row">
-              <span class="detail-label">Phone:</span>
-              <span class="detail-value">${requestData.phone}</span>
-            </div>
-            <div class="detail-row">
-              <span class="detail-label">Service Type:</span>
-              <span class="detail-value">${requestData.service_type}</span>
-            </div>
-
-            <div class="description-box">
-              <h2>Project Description</h2>
-              <p>${requestData.project_description}</p>
-            </div>
-
-            <p style="margin-top: 30px; padding: 15px; background: #fef3c7; border-radius: 6px; border-left: 4px solid #f59e0b;">
-              <strong>Action Required:</strong> Please follow up with this client within 24 hours.
-            </p>
-          </div>
-        </div>
-      </body>
-      </html>
-    `;
-
-    if (!RESEND_API_KEY) {
-      console.warn("RESEND_API_KEY not configured. Emails will not be sent.");
-      return new Response(
-        JSON.stringify({
-          success: true,
-          message: "Request saved successfully. Email sending is not configured yet.",
-          emailsNotSent: true
-        }),
-        {
-          status: 200,
-          headers: {
-            ...corsHeaders,
-            "Content-Type": "application/json",
-          },
-        }
-      );
+    try {
+      const accessToken = await gmailAccessToken(gmailClientId, gmailClientSecret, gmailRefreshToken);
+      await Promise.all([
+        sendWithGmail(accessToken, recipients.customer, gmailSenderEmail, "Thank you for your service request — RP Innovation Labs", customerEmail(serviceRequest)),
+        sendWithGmail(accessToken, recipients.admin, gmailSenderEmail, `New service request from ${serviceRequest.company}`, adminEmail(serviceRequest)),
+      ]);
+      await supabase.from("service_requests").update({ delivery_status: "sent", delivery_error: null }).eq("id", stored.id);
+      return reply({ success: true, message: "Request received and confirmation email sent." }, 200, corsOrigin);
+    } catch (emailError) {
+      await supabase.from("service_requests").update({ delivery_status: "failed", delivery_error: "Email dispatch failed" }).eq("id", stored.id);
+      console.error("Service request email dispatch failed", emailError instanceof Error ? emailError.message : "unknown error");
+      return reply({ success: false, error: "Your request was saved, but email delivery could not be confirmed. Please contact us directly." }, 502, corsOrigin);
     }
-
-    const emailPromises = [];
-
-    emailPromises.push(
-      fetch('https://api.resend.com/emails', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${RESEND_API_KEY}`,
-        },
-        body: JSON.stringify({
-          from: FROM_EMAIL,
-          to: [requestData.email],
-          subject: `Thank You for Your Service Request - RP Innovation Labs`,
-          html: userEmailHTML,
-        }),
-      })
-    );
-
-    emailPromises.push(
-      fetch('https://api.resend.com/emails', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${RESEND_API_KEY}`,
-        },
-        body: JSON.stringify({
-          from: FROM_EMAIL,
-          to: [ADMIN_EMAIL],
-          subject: `New Service Request from ${requestData.company}`,
-          html: adminEmailHTML,
-        }),
-      })
-    );
-
-    const emailResults = await Promise.allSettled(emailPromises);
-
-    const responses = await Promise.all(
-      emailResults.map(async (result, index) => {
-        if (result.status === 'fulfilled') {
-          const response = result.value;
-          const responseData = await response.json();
-          return {
-            success: response.ok,
-            status: response.status,
-            data: responseData,
-            type: index === 0 ? 'customer' : 'admin'
-          };
-        }
-        return {
-          success: false,
-          error: result.reason,
-          type: index === 0 ? 'customer' : 'admin'
-        };
-      })
-    );
-
-    console.log("Email sending results:", JSON.stringify(responses, null, 2));
-
-    const emailsFailed = responses.some(r => !r.success);
-
-    return new Response(
-      JSON.stringify({
-        success: true,
-        message: emailsFailed ? "Request received but some emails failed to send" : "Request received and emails sent successfully!",
-        emailsSent: !emailsFailed
-      }),
-      {
-        status: 200,
-        headers: {
-          ...corsHeaders,
-          "Content-Type": "application/json",
-        },
-      }
-    );
-
   } catch (error) {
-    console.error("Error processing request:", error);
-    return new Response(
-      JSON.stringify({
-        success: false,
-        error: error instanceof Error ? error.message : "Unknown error occurred"
-      }),
-      {
-        status: 500,
-        headers: {
-          ...corsHeaders,
-          "Content-Type": "application/json",
-        },
-      }
-    );
+    const message = error instanceof Error ? error.message : "Unable to process the request.";
+    const status = /valid|required|characters|phone|service type|Bot verification/i.test(message) ? 400 : 500;
+    return reply({ success: false, error: message }, status, corsOrigin);
   }
 });
+
