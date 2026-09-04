@@ -104,7 +104,7 @@ export default function Footer() {
               © {currentYear} RP Innovation Labs. All rights reserved.
             </p>
             <div className="flex space-x-6 text-sm">
-              <a href="#" className="hover:text-blue-400 transition-colors">Privacy Policy</a>
+              <a href="/privacy" className="hover:text-blue-400 transition-colors">Privacy Policy</a>
               <a href="#" className="hover:text-blue-400 transition-colors">Terms of Service</a>
               <a href="#" className="hover:text-blue-400 transition-colors">Cookie Policy</a>
             </div>
@@ -114,3 +114,4 @@ export default function Footer() {
     </footer>
   );
 }
+
