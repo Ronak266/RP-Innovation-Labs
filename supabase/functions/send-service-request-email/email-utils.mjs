@@ -76,3 +76,15 @@ export function turnstileHostnameFromOrigin(origin) {
   return new URL(origin).hostname;
 }
 
+export function nextRateLimitWindow(existing, nowIso, maxAttempts = 5, windowSeconds = 900) {
+  const now = Date.parse(nowIso);
+  const startedAt = Date.parse(existing?.window_started_at || '');
+  const remainsInWindow = Number.isFinite(startedAt) && startedAt >= now - windowSeconds * 1000;
+  const attempts = remainsInWindow ? Number(existing.attempts || 0) + 1 : 1;
+  return {
+    allowed: attempts <= maxAttempts,
+    attempts,
+    window_started_at: remainsInWindow ? existing.window_started_at : nowIso,
+  };
+}
+
