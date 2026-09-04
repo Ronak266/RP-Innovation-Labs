@@ -1,3 +1,4 @@
+
 const SERVICE_TYPES = new Set([
   'ERP Analytics Solutions', 'Data Ingestion', 'Data Transformation', 'Data Visualization',
   'Business Intelligence', 'Data Security & Compliance', 'Custom Solution',
@@ -65,5 +66,9 @@ export function buildGmailRawMessage({ to, from, subject, html }) {
 
 export function isTrustedTurnstileResponse(result, expectedHostname) {
   return result?.success === true && result.hostname === expectedHostname;
+}
+
+export function buildTurnstileVerificationBody(secret, token) {
+  return new URLSearchParams({ secret, response: token });
 }
 
