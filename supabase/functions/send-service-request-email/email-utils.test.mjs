@@ -1,9 +1,11 @@
+
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
   buildGmailRawMessage,
   buildEmailRecipients,
+  buildTurnstileVerificationBody,
   escapeHtml,
   isTrustedTurnstileResponse,
   validateServiceRequest,
@@ -53,6 +55,11 @@ test('always sends the admin notification to RP Innovation Labs and confirmation
 test('accepts a Turnstile response only for the configured hostname', () => {
   assert.equal(isTrustedTurnstileResponse({ success: true, hostname: 'www.rpinnovationlabs.com' }, 'www.rpinnovationlabs.com'), true);
   assert.equal(isTrustedTurnstileResponse({ success: true, hostname: 'attacker.example' }, 'www.rpinnovationlabs.com'), false);
+});
+
+test('verifies a Turnstile token without proxy IP metadata', () => {
+  const body = buildTurnstileVerificationBody('test-secret', 'test-token');
+  assert.equal(body.toString(), 'secret=test-secret&response=test-token');
 });
 
 test('builds a Gmail API message with a UTF-8 HTML body and cannot inject extra headers through the subject', () => {
