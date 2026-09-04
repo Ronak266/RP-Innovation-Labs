@@ -7,9 +7,14 @@ import WhyChooseUs from './components/WhyChooseUs';
 import ServiceRequest from './components/ServiceRequest';
 import Contact from './components/Contact';
 import Footer from './components/Footer';
+import PrivacyPolicy from './components/PrivacyPolicy';
 
 function App() {
   const [isServiceRequestOpen, setIsServiceRequestOpen] = useState(false);
+
+  if (window.location.pathname === '/privacy') {
+    return <PrivacyPolicy />;
+  }
 
   return (
     <div className="min-h-screen bg-white">
@@ -31,3 +36,4 @@ function App() {
 }
 
 export default App;
+
