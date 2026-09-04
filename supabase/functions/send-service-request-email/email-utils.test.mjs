@@ -8,6 +8,7 @@ import {
   buildTurnstileVerificationBody,
   escapeHtml,
   isTrustedTurnstileResponse,
+  nextRateLimitWindow,
   turnstileHostnameFromOrigin,
   validateServiceRequest,
 } from './email-utils.mjs';
@@ -67,6 +68,13 @@ test('derives the trusted Turnstile hostname from the allowed website origin', (
   assert.equal(
     turnstileHostnameFromOrigin('https://rp-innovation-labs-c-ck4o.bolt.host'),
     'rp-innovation-labs-c-ck4o.bolt.host',
+  );
+});
+
+test('keeps a request within its existing rate-limit window', () => {
+  assert.deepEqual(
+    nextRateLimitWindow({ attempts: 4, window_started_at: '2026-09-04T12:00:00.000Z' }, '2026-09-04T12:05:00.000Z'),
+    { allowed: true, attempts: 5, window_started_at: '2026-09-04T12:00:00.000Z' },
   );
 });
 
